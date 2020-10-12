@@ -1,7 +1,8 @@
-// "use strict";
+"use strict";
 
-const functions = require("firebase-functions");
 const admin = require("firebase-admin");
+const firebase_tools = require('firebase-tools');
+const functions = require("firebase-functions");
 admin.initializeApp();
 
 const stripe = require("stripe")(functions.config().stripe.secret_test_key);
@@ -50,9 +51,10 @@ exports.createEphemeralKey = functions.https.onCall(async (data, context) => {
 });
 
 exports.makeCharge = functions.https.onCall(async (data, context) => {
-  const customerId = data.customerId;
-  const amount = data.amount;
+  const customerId = data.customer_id;
+  const totalAmount = data.total_amount;
   const idempotency = data.idempotency;
+  const paymentMethodId = data.payment_method_id;
   const uid = context.auth.uid;
 
   if (uid === null) {
@@ -63,18 +65,22 @@ exports.makeCharge = functions.https.onCall(async (data, context) => {
     );
   }
 
-  return stripe.charges.create({ 
-    amount: amount,
-    currency: "usd",
-    source: "tok_mastercard",
+  return stripe.paymentIntents.create({
+      payment_method: paymentMethodId,
+      customer: customerId,
+      amount: totalAmount,
+      currency: 'usd',
+      confirm: true,
+      payment_method_types: ['card']
   }, {
-    idempotencyKey: idempotency
-  }).then( _ => {
-    return;
-  }).catch( err => {
-    console.log(err);
-    throw new functions.https.HttpsError("internal", "Unable to create charge");
-  });
+      idempotency_key: idempotency
+  }).then(intent => {
+      console.log('Charge Success: ', intent);
+      return;
+  }).catch(err => {
+      console.log(err);
+      throw new functions.https.HttpsError('internal', ' Unable to create charge: ' + err);
+  });    
 
 });
 
@@ -94,3 +100,27 @@ exports.userDeleted = functions.auth.user().onDelete(async (user) => {
   }
   return;
 });
+
+exports.recursiveDelete = functions
+  .runWith({
+    timeoutSeconds: 540,
+    memory: '2GB'
+  })
+  .https.onCall(async (data, context) => {
+    const path = `/bag/${context.auth.uid}/items`
+    console.log(
+      `User ${context.auth.uid} has requested to delete path ${path}`
+    );
+
+    await firebase_tools.firestore
+      .delete(path, {
+        project: process.env.GCLOUD_PROJECT,
+        recursive: true,
+        yes: true,
+        token: functions.config().fb.token
+      });
+
+    return {
+      path: path 
+    };
+  });
